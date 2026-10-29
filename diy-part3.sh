@@ -34,22 +34,34 @@ if [ ! -f .config ]; then
 fi
 
 # ---------------------------------------------------------------
-# 生效范围
-#   CI 会导出 PROFILE；默认只给 040G-MD 加这套插件，避免其它机型 /
-#   profile=all 被无谓地增大固件。
-#   要放开给所有机型：把 DIYP3_PROFILES 设为空串。
-#   多个机型用逗号或空格分隔。
+# 生效机型（平时只改这里）
+#   一行写一个机型；增删机型就改这个数组：
+#     · 删掉某一行  = 该机型不再追加这些插件
+#     · 数组清空    = 所有机型都追加
+#
+#   机型名必须和 build-ponwrt.yml 的 profile 选项一致。
 # ---------------------------------------------------------------
-DIYP3_PROFILES="${DIYP3_PROFILES-nokia_xg-040g-md-ubi}"
-if [ -n "${PROFILE:-}" ] && [ -n "$DIYP3_PROFILES" ]; then
-  case " $(printf '%s' "$DIYP3_PROFILES" | tr ',' ' ') " in
-    *" $PROFILE "*) : ;;
-    *)
-      echo "PROFILE=$PROFILE 不在 DIYP3_PROFILES（$DIYP3_PROFILES）内，跳过附加插件"
-      rm -f .diy-part3-packages
-      exit 0
-      ;;
-  esac
+ENABLED_PROFILES=(
+  nokia_xg-040g-md-ubi
+  fiberhome_hg5585f-ct
+  fiberhome_hg5585f-cu
+)
+
+# 当前构建的机型由 workflow 通过环境变量 PROFILE 传进来；
+# 本地手动运行时可以没有 PROFILE，那就默认全部执行。
+if [ -n "${PROFILE:-}" ] && [ "${#ENABLED_PROFILES[@]}" -gt 0 ]; then
+  PROFILE_MATCHED=false
+  for p in "${ENABLED_PROFILES[@]}"; do
+    if [ "$p" = "$PROFILE" ]; then
+      PROFILE_MATCHED=true
+      break
+    fi
+  done
+  if [ "$PROFILE_MATCHED" = false ]; then
+    echo "PROFILE=$PROFILE 不在启用列表内，跳过附加插件"
+    rm -f .diy-part3-packages
+    exit 0
+  fi
 fi
 
 # ---------------------------------------------------------------

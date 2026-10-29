@@ -1038,7 +1038,7 @@ jobs:
             fi
             echo "✅ diy-part3 附加插件校验通过（$(grep -c . .diy-part3-packages) 个）"
           else
-            echo "ℹ 未启用 diy-part3 附加插件（当前机型不在 DIYP3_PROFILES 内）"
+            echo "ℹ 未启用 diy-part3 附加插件（当前机型不在 diy-part3.sh 的 ENABLED_PROFILES 内）"
           fi
 
           # =========================================================

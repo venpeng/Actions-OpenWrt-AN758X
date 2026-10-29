@@ -81,7 +81,8 @@
 ## 附加插件（`diy-part3.sh`）
 
 不改 `configs/<机型>.config`，由 `diy-part3.sh` 在 `diy-part2.sh` 之后、`make defconfig` 之前把插件追加进 `.config`。
-默认只对 `nokia_xg-040g-md-ubi` 生效（可用 `DIYP3_PROFILES` 覆盖，留空 = 所有机型）：
+默认只对 `nokia_xg-040g-md-ubi`、`fiberhome_hg5585f-ct`、`fiberhome_hg5585f-cu` 生效。
+增删机型改脚本顶部的 `ENABLED_PROFILES` 数组即可（一行一个机型，数组清空 = 所有机型）：
 
 | 菜单 | 包 |
 |---|---|
