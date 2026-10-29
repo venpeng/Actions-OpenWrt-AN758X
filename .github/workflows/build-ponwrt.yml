@@ -19,6 +19,7 @@ env:
   FEEDS_CONF: ''
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
+  DIY_P3_SH: diy-part3.sh
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: ${{ github.event.inputs.upload_release || 'true' }}
@@ -884,6 +885,26 @@ jobs:
           echo "WANT_EIP93=${OPT_CRYPTO_EIP93}"     >> "$GITHUB_ENV"
 
       # =========================================================
+      # 8.5 diy-part3.sh —— 追加机型插件
+      #   写在机型 config 之外，避免为了多装几个包去改
+      #   configs/<机型>.config。必须在 make defconfig 之前追加，
+      #   否则新符号还没进 .config 就被展开掉了。
+      #   脚本自己按 PROFILE 决定是否生效。
+      # =========================================================
+      - name: Add extra plugins (diy-part3.sh)
+        run: |
+          cd "$BUILD_ROOT/openwrt"
+          S="$GITHUB_WORKSPACE/$DIY_P3_SH"
+          if [ ! -f "$S" ]; then
+            echo "::warning::未找到 $S，跳过附加插件"
+            rm -f .diy-part3-packages
+            exit 0
+          fi
+          dos2unix "$S" 2>/dev/null || true
+          chmod +x "$S"
+          "$S"
+
+      # =========================================================
       # 9. defconfig + 校验机型
       #    【唯一一次 defconfig】后续不再调用，避免 .config 被重新展开、
       #    机型配置里写死的选择被静默剔除。
@@ -984,6 +1005,41 @@ jobs:
             exit 1
           fi
           echo "✅ 状态插件校验通过"
+
+          # =========================================================
+          # diy-part3 附加插件复核（缺一个就失败）
+          #
+          #   diy-part3.sh 在 defconfig 前把插件写进 .config，并留下
+          #   .diy-part3-packages 清单。defconfig 会把 feeds 里不存在的
+          #   包静默剔除 —— 这里逐项确认，避免刷完才发现菜单没有。
+          #   清单不存在 = 该机型没启用 diy-part3，直接跳过。
+          # =========================================================
+          if [ -f .diy-part3-packages ]; then
+            P3_MISS=""
+            while IFS= read -r p; do
+              [ -n "$p" ] || continue
+              grep -qx "CONFIG_PACKAGE_${p}=y" .config || P3_MISS="$P3_MISS $p"
+            done < .diy-part3-packages
+
+            if [ -n "$P3_MISS" ]; then
+              echo "::error::diy-part3.sh 请求的插件在 defconfig 后未启用:$P3_MISS"
+              echo "  多半是包不在 feeds 索引里，或依赖缺失被 Kconfig 剔除。"
+              for p in $P3_MISS; do
+                echo "  --- ${p} ---"
+                if grep -qx "Package: ${p}" tmp/.packageinfo 2>/dev/null; then
+                  echo "    索引：存在"
+                  grep -A5 "^Package: ${p}\$" tmp/.packageinfo | head -8
+                else
+                  echo "    索引：tmp/.packageinfo 查不到"
+                fi
+                echo "    .config：$(grep -n "CONFIG_PACKAGE_${p}=" .config | head -3 || echo '无记录')"
+              done
+              exit 1
+            fi
+            echo "✅ diy-part3 附加插件校验通过（$(grep -c . .diy-part3-packages) 个）"
+          else
+            echo "ℹ 未启用 diy-part3 附加插件（当前机型不在 DIYP3_PROFILES 内）"
+          fi
 
           # =========================================================
           # 代理插件校验（只警告，不阻断）

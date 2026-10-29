@@ -78,6 +78,22 @@
 
 `ADD_FTTR` 及其子开关只在 `h3c_hm2004-du` 下生效，其余机型自动跳过。
 
+## 附加插件（`diy-part3.sh`）
+
+不改 `configs/<机型>.config`，由 `diy-part3.sh` 在 `diy-part2.sh` 之后、`make defconfig` 之前把插件追加进 `.config`。
+默认只对 `nokia_xg-040g-md-ubi` 生效（可用 `DIYP3_PROFILES` 覆盖，留空 = 所有机型）：
+
+| 菜单 | 包 |
+|---|---|
+| Extra packages → autocore-arm | `autocore`（ponwrt 里没有独立的 `autocore-arm` 符号） |
+| Extra packages → automount / autosamba | `automount` / `autosamba`（后者自动带 `luci-app-samba4`、`samba4-server`、`wsdd2`） |
+| LuCI → Applications | `luci-app-autoreboot` `luci-app-ddns` `luci-app-homeproxy` `luci-app-ttyd` `luci-app-upnp` `luci-app-wechatpush` `luci-app-wol` |
+| Network → IP Addresses and Names | `ddns-scripts-cloudflare` |
+
+脚本会把生效清单写到 `.diy-part3-packages`，`Validate configuration` 在 `defconfig` 之后逐项复核；
+任一点名的插件没进 `.config` 就直接失败，不会静默编出一个缺菜单的固件。
+要增删插件，改脚本里的 `PLUGINS` 数组即可。
+
 ## 构建缓存（移植自 VIKINGYFY/OpenWRT-CI）
 
 一份缓存 = 三个目录：
