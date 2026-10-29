@@ -285,6 +285,7 @@ jobs:
              && bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" unpack "$CACHE_ROOT" "./$ASSET"; then
             rm -f "./$ASSET"
             echo "restored=true" >> "$GITHUB_OUTPUT"
+            echo "restored_key=${ASSET%.tzst}" >> "$GITHUB_OUTPUT"
             echo "✅ 已从 Release 备份恢复: $ASSET"
           else
             rm -f "./$ASSET"
@@ -298,12 +299,12 @@ jobs:
           && (steps.cache-restore.outputs.cache-matched-key != ''
               || steps.release-restore.outputs.restored == 'true')
         env:
-          RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key }}
-          CACHE_EXACT: ${{ steps.cache-restore.outputs.cache-hit == 'true' && 'true' || 'false' }}
+          RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored_key) }}
+          CACHE_EXACT: ${{ (steps.cache-restore.outputs.cache-hit == 'true' || (steps.release-restore.outputs.restored_key != '' && steps.release-restore.outputs.restored_key == steps.cache-key.outputs.key)) && 'true' || 'false' }}
         run: |
           cd "$CACHE_ROOT"
           echo "actions/cache 恢复自: ${RESTORED_FROM:-（无）}"
-          echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }}"
+          echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }} / key=${{ steps.release-restore.outputs.restored_key }}"
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" prepare "$CACHE_ROOT"
 
       - name: Update & install feeds
@@ -411,7 +412,8 @@ jobs:
             echo "::error::tools 编译失败"; exit 1; }
           make toolchain/install -j"$(nproc)" || make toolchain/install -j1 V=s || {
             echo "::error::toolchain 编译失败"; exit 1; }
-          touch tools/stamp-compile toolchain/stamp-compile 2>/dev/null || true
+          # 只写 tmp/.build；别 touch tools/stamp-compile（那是 make 变量不是文件，
+          # 造空文件会被 timestamp.pl 当成源码更新，下一轮白重编）
           mkdir -p tmp && echo 1 > tmp/.build
 
       # =========================================================
@@ -447,7 +449,11 @@ jobs:
               echo "✅ $p 产物已就位"
             fi
           done
-          touch tools/stamp-compile toolchain/stamp-compile 2>/dev/null || true
+
+          # ★ 预热完立刻冻结 build_dir 的 host 戳（source 模式专用，见 pwrt-cache.sh）。
+          #   不冻结的话，这个缓存虽然含 go/rust 二进制，但下一轮 make 看不到
+          #   built 戳，仍会把两个都自举一遍 —— 预热就白预热了。
+          bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
 
       - name: Save build cache
         if: >-
@@ -534,7 +540,7 @@ jobs:
             echo ""
             echo "- key: \`${{ steps.cache-key.outputs.key }}\`"
             echo "- actions/cache 命中: ${{ steps.cache-restore.outputs.cache-matched-key || '无' }}"
-            echo "- Release 备份恢复: ${{ steps.release-restore.outputs.restored || 'false' }}"
+            echo "- Release 备份恢复: ${{ steps.release-restore.outputs.restored || 'false' }}（key \`${{ steps.release-restore.outputs.restored_key }}\`）"
             echo "- 编译工具链: ${{ steps.toolchain.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
 

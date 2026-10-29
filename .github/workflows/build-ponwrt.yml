@@ -481,6 +481,9 @@ jobs:
           if bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" unpack "$CACHE_ROOT" "./$ASSET"; then
             rm -f "./$ASSET"
             echo "restored=true" >> "$GITHUB_OUTPUT"
+            # 资产名就是 <key>.tzst，去掉后缀还原出 key —— 只有它与本次 key 完全
+            # 相等，「恢复到的这份缓存 = 当前提交编出来的」才成立，才能判精确命中。
+            echo "restored_key=${ASSET%.tzst}" >> "$GITHUB_OUTPUT"
             echo "✅ 已从 Release 备份恢复: $ASSET"
           else
             rm -f "./$ASSET"
@@ -503,16 +506,17 @@ jobs:
           && (steps.cache-restore.outputs.cache-matched-key != ''
               || steps.release-restore.outputs.restored == 'true')
         env:
-          RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored) }}
-          # 只有「actions/cache 精确命中」才等于「这份缓存就是当前提交编出来的」，
-          # 此时 tools/toolchain 一定完整，可以跳过重编；前缀回退或 Release 恢复
-          # 都可能是别的提交，源码比缓存新，必须让 make 重编。
-          CACHE_EXACT: ${{ steps.cache-restore.outputs.cache-hit == 'true' && 'true' || 'false' }}
+          RESTORED_FROM: ${{ steps.cache-restore.outputs.cache-matched-key || format('Release:{0}', steps.release-restore.outputs.restored_key) }}
+          # 精确 = 「这份缓存就是当前这个提交编出来的」。两条通道都算：
+          #   actions/cache  cache-hit=true（key 完全相等）
+          #   Release 备份   资产名去掉 .tzst 后 == 本次 key
+          # 前缀回退 / Release 取到旧代都不算，源码比缓存新，必须让 make 重编。
+          CACHE_EXACT: ${{ (steps.cache-restore.outputs.cache-hit == 'true' || (steps.release-restore.outputs.restored_key != '' && steps.release-restore.outputs.restored_key == steps.cache-key.outputs.key)) && 'true' || 'false' }}
         run: |
           cd "$CACHE_ROOT"
           echo "来源: $RESTORED_FROM"
           echo "actions/cache 精确命中: ${{ steps.cache-restore.outputs.cache-hit }}"
-          echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }}"
+          echo "Release 备份恢复: ${{ steps.release-restore.outputs.restored }} / key=${{ steps.release-restore.outputs.restored_key }}"
           bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" prepare "$CACHE_ROOT"
 
       # =========================================================
@@ -981,6 +985,26 @@ jobs:
           fi
           echo "✅ 状态插件校验通过"
 
+          # =========================================================
+          # 代理插件校验（只警告，不阻断）
+          #
+          #   这是「源码拉下来了、索引里有、固件里却没这个菜单」的那个坑：
+          #   ① kconfig 只认 CONFIG_PACKAGE_x=y，行首带 '#' 等于没写；
+          #   ② profile=<机型> 时只读 configs/<机型>.config，
+          #      configs/<SoC>.config 完全不参与。
+          #   两条凑一起，全程一句报错都没有。
+          # =========================================================
+          PROXY_MISS=""
+          for p in luci-app-passwall xray-core sing-box; do
+            grep -qx "CONFIG_PACKAGE_${p}=y" .config || PROXY_MISS="$PROXY_MISS $p"
+          done
+          if [ -n "$PROXY_MISS" ]; then
+            echo "::warning::以下插件没进 .config:$PROXY_MISS（固件里不会有，源码和索引都是好的）"
+            echo "        改 configs/${PROFILE}.config：写成 CONFIG_PACKAGE_<名>=y，行首不要带 #"
+          else
+            echo "✅ 代理插件校验通过（passwall / xray / sing-box 均为 =y）"
+          fi
+
           # 中文包（po 注入后才存在，缺失只警告不阻断）
           if ! grep -q "^CONFIG_PACKAGE_luci-i18n-airoha-npu-zh-cn=y" .config; then
             echo "::warning::luci-i18n-airoha-npu-zh-cn 未启用（po/zh_Hans 未注入？界面将为英文）"
@@ -1092,9 +1116,13 @@ jobs:
           make toolchain/install -j"$(nproc)" || make toolchain/install -j1 V=s || {
             echo "::error::toolchain 编译失败"; exit 1; }
 
-          # 让后续 make 认账：touch stamp，而不是 sed 改写 Makefile
-          # （改 Makefile 会在上游调整缩进后失效，还会污染工作区）
-          touch toolchain/stamp-compile tools/stamp-compile 2>/dev/null || true
+          # 让后续 make 认账：写 tmp/.build 就够了。
+          # ⚠ 不要 touch tools/stamp-compile / toolchain/stamp-compile —— 那俩是
+          #   make 变量（stampfile 宏），不是文件。造同名空文件只会被
+          #   scripts/timestamp.pl 的 find -newer 命中，判定「源码变了」，
+          #   于是下一轮白重编 tools + toolchain（实测 +26 分钟）。
+          #   真正的戳是 staging_dir/host/stamp/.tools_compile_*，
+          #   make install 自己会写，这里不用管。
           mkdir -p tmp && echo 1 > tmp/.build
 
       # =========================================================
@@ -1145,7 +1173,11 @@ jobs:
             fi
           done
 
-          touch tools/stamp-compile toolchain/stamp-compile 2>/dev/null || true
+          # ★ 立刻把 build_dir 的 host 戳冻一份（source 模式专用）。
+          #   为什么不等编译结束：后面还有最长 200 分钟的编译，一旦超时或失败，
+          #   存下来的缓存就没有戳，下一轮 go/rust 又要自举一遍。
+          #   编译结束后还会再冻一次，覆盖 target 阶段新编出来的 host 包。
+          bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
 
       # =========================================================
       # 10.05 ★ 工具链一编完就存一次（不等编译结束）
@@ -1187,14 +1219,18 @@ jobs:
           HIT='${{ steps.cache-restore.outputs.cache-hit }}'
           MATCHED='${{ steps.cache-restore.outputs.cache-matched-key }}'
           REL='${{ steps.release-restore.outputs.restored }}'
+          RELKEY='${{ steps.release-restore.outputs.restored_key }}'
+          KEY='${{ steps.cache-key.outputs.key }}'
           if [ "${IGNORE_CACHE}" = "true" ]; then
             DECISION="ignore_cache=true，按要求跳过恢复、强制重编"
           elif [ -n "$MATCHED" ] && [ "$HIT" = "true" ]; then
             DECISION="actions/cache 精确命中，工具链一步没编"
           elif [ -n "$MATCHED" ]; then
             DECISION="actions/cache 前缀回退命中上一代，工具链没编；本次存新一代"
+          elif [ "$REL" = "true" ] && [ "$RELKEY" = "$KEY" ]; then
+            DECISION="从 Release 备份恢复，且就是当前提交那一份 —— tools/toolchain 一步没编；但 host go/rust 与 build_dir 戳本轮仍会产出，结束时会存回去"
           elif [ "$REL" = "true" ]; then
-            DECISION="actions/cache 空空，已从 Release 备份恢复；本次回填快通道"
+            DECISION="从 Release 备份恢复的是旧代，工具链需补编；本次回填快通道"
           else
             DECISION="两条通道都没有，冷编译（本次会同时存两处）"
           fi
@@ -1205,7 +1241,7 @@ jobs:
             echo "- 决定：${DECISION}"
             echo "- key：\`${{ steps.cache-key.outputs.key }}\`"
             if [ -n "$MATCHED" ]; then echo "- actions/cache 恢复自：\`${MATCHED}\`"; fi
-            if [ "$REL" = "true" ]; then echo "- Release 备份：已恢复"; fi
+            if [ "$REL" = "true" ]; then echo "- Release 备份：已恢复（\`${RELKEY}\`）"; fi
             echo "- 编译工具链：$([ "${{ steps.toolchain.outcome }}" = "skipped" ] && echo '否（缓存已给出）' || echo '是')"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1354,13 +1390,21 @@ jobs:
           echo "status=success" >> "$GITHUB_OUTPUT"
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> "$GITHUB_ENV"
 
+          # 全量再冻一次：target 阶段会顺带编出一批 host 包（python3 等），
+          # 这些戳只有编译结束才存在。source 模式下它们同样会被自举。
+          bash "$GITHUB_WORKSPACE/scripts/pwrt-cache.sh" freeze "$CACHE_ROOT" || true
+
       # =========================================================
       # 18.5 存新一代缓存
       #   三条判断缺一不可：
       #     success()                    编译过的东西才可信
-      #     cache-hit != true            精确命中说明内容没变（前缀回退命中【要】存，
-      #                                  那正是缓存向前滚动的动作）
+      #     cache-hit != true            只有「actions/cache 里就有同 key 条目」才说明
+      #                                  内容确实不用重存；其余情况一律存
       #     compile/toolchain 任一成功  toolchain-only 的预热也要存
+      # ⚠ 不判断 Release 里有没有同 key：Release 是【可覆盖】的（--clobber），
+      #   而 actions/cache 一个 key 只能存一次。「Release 已有该 key」并不能推出
+      #   「内容一致」——本轮可能刚补编完 hostpkg、刚冻出一批 build_dir 戳，
+      #   这些只有存回去下一轮才用得上。曾经因为跳过，导致 go/rust 白自举一轮。
       # ⚠ 不判断 save-early：它存的是 <key>-early，与本处正式 key 不同、可共存，
       #   而正式这份才是完整的（含编译阶段才带出来的 hostpkg）。
       #   同 key 已存在会报 already exists，continue-on-error 兜住，属正常。

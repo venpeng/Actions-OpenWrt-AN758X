@@ -112,6 +112,92 @@ cmd_key() {
 }
 
 # ---------------------------------------------------------------
+# host 包的 build_dir 戳 —— 缓存里到底缺了什么
+#
+#   include/host-build.mk 把 host 包的四个戳拆在两处：
+#     INSTALLED  = staging_dir/hostpkg/stamp/.<pkg>_installed   ✅ 跟着缓存走
+#     BUILT      = build_dir/host/<pkg>/.built                  ❌ 不在缓存路径
+#     CONFIGURED = build_dir/host/<pkg>/.configured             ❌
+#     PREPARED   = build_dir/host/<pkg>/.prepared_<md5>          ❌
+#   依赖链是 installed ← built ← configured ← prepared。
+#   build_dir 不缓存 → 恢复后 built 这一层不存在 → make 认为没编过 → 整条链重做。
+#   source 模式下这就是 golang / rust 的完整自举：实测多 20~40 分钟、多写 13~14 GB。
+#
+#   所以只把「戳」冻进缓存，不冻内容：staging_dir 里已经有 installed 产物，
+#   缺的只是「我做过了」这个证据。戳全是 0 字节空文件，100 来个包 × 3 个
+#   ≈ 200 KB，zstd 之后不到 10 KB。
+#
+#   ⚠ 不能直接把 build_dir 加进 with.path：那是 13~14 GB，超 Release 单文件
+#     2 GiB 上限，也会瞬间吃光 actions/cache 的 10 GB 配额。
+#   ⚠ 镜像放 staging_dir/host/.builddir-stamps：staging_dir/host* 本来就在
+#     缓存路径里，actions/cache 与 Release 两条通道都能自动带上，
+#     不用改 workflow 的 with.path。
+#   ⚠ prebuilt 模式一律不冻：那里的 go/rust 是指向 runner 的符号链接，
+#     换镜像后可能悬空；宁可让同一条链重跑一遍自愈（rust-prebuilt.mk 已把
+#     Prepare/Configure/Compile 置空，只花几秒）。
+# ---------------------------------------------------------------
+HOST_STAMP_MIRROR="staging_dir/host/.builddir-stamps"
+
+cmd_freeze() {
+  cd "$OW" || { echo "::error::无法进入 $OW"; exit 1; }
+
+  if [ "${HOST_MODE:-prebuilt}" != "source" ]; then
+    # 顺手清掉上一次 source 模式留下的镜像：否则它会跟着 prebuilt 的缓存
+    # 一路滚下去，将来切回 source 时又用一个早已对不上的旧镜像
+    # （.prepared 的名字带源码 MD5，对不上会重建，但没必要留这个噪音）。
+    rm -rf "$HOST_STAMP_MIRROR"
+    echo "prebuilt 模式：不冻 build_dir 戳（产物是符号链接，重跑一遍更安全）"
+    return 0
+  fi
+
+  rm -rf "$HOST_STAMP_MIRROR"
+  mkdir -p "$HOST_STAMP_MIRROR"
+
+  local n=0 rel
+  while IFS= read -r -d '' f; do
+    rel="${f#./}"
+    mkdir -p "$HOST_STAMP_MIRROR/$(dirname "$rel")"
+    cp -a "$f" "$HOST_STAMP_MIRROR/$rel" 2>/dev/null || continue
+    n=$((n + 1))
+  done < <(find build_dir/host build_dir/hostpkg \
+             -maxdepth 2 -type f \
+             \( -name '.prepared*' -o -name '.configured' -o -name '.built' \) \
+             -print0 2>/dev/null)
+
+  echo "已冻结 build_dir 戳 $n 个（$(du -sh "$HOST_STAMP_MIRROR" 2>/dev/null | cut -f1)）-> $HOST_STAMP_MIRROR"
+  [ "$n" -gt 0 ] || echo "::warning::一个戳都没找到 —— build_dir 可能已被清理，下一轮仍会自举"
+
+  # 把包名列出来：下一轮能不能跳过自举，全看这里有没有 golang / rust
+  local pkgs
+  pkgs=$(cd "$HOST_STAMP_MIRROR" && find . -mindepth 3 -name '.built' -printf '%h\n' 2>/dev/null \
+         | sed 's#^\./##' | sort -u | head -20 | tr '\n' ' ')
+  [ -n "$pkgs" ] && echo "  覆盖的 host 包: $pkgs"
+}
+
+thaw_host_stamps() {
+  [ -d "$HOST_STAMP_MIRROR" ] || return 0
+
+  if [ "${HOST_MODE:-prebuilt}" != "source" ]; then
+    echo "prebuilt 模式：忽略 build_dir 戳镜像"
+    return 0
+  fi
+
+  local n=0 rel
+  while IFS= read -r -d '' f; do
+    rel="${f#./}"
+    mkdir -p "$(dirname "$rel")"
+    cp -a "$HOST_STAMP_MIRROR/$rel" "$rel" 2>/dev/null || continue
+    n=$((n + 1))
+  done < <(cd "$HOST_STAMP_MIRROR" && find . -type f -print0)
+
+  if [ "$n" -gt 0 ]; then
+    echo "已还原 build_dir 戳 $n 个 —— 这些 host 包 make 会跳过，不再自举 go/rust"
+  else
+    echo "::warning::戳镜像存在但还原了 0 个，本轮仍会自举"
+  fi
+}
+
+# ---------------------------------------------------------------
 # prepare —— 恢复缓存之后的「让 make 认账」步骤
 #
 #   ⚠ 范围只到「非 target」：
@@ -122,6 +208,11 @@ cmd_key() {
 # ---------------------------------------------------------------
 cmd_prepare() {
   cd "$OW" || { echo "::error::无法进入 $OW"; exit 1; }
+
+  # 先把 build_dir 的 host 戳还原回去，再刷新 staging 的戳 ——
+  # 顺序不能反：还原的戳要保持构建时的旧 mtime，而 installed 要刷成「现在」，
+  # 这样 installed 才比 built 新，make 不会重跑 install。
+  thaw_host_stamps
 
   local nstamp=0
   while IFS= read -r d; do
@@ -164,30 +255,86 @@ cmd_prepare() {
   echo "已刷新 stamp: ${nstamp} 个（不含 target）"
   echo "已写入 tmp/.build"
 
-  # 落地校验：host gcc / go 在不在，是判断这份缓存有没有用的最快指标
-  #
-  # ⚠ go 的检查必须同时认符号链接（-type f -o -type l）：
-  #   OpenWrt 的 staging_dir/host/bin/go 通常是指向
-  #   hostpkg/lib/go-<ver>/bin/go 的链接，只找 -type f 会漏掉，
-  #   于是一份完好的缓存被误报成「缺 go」。
+  host_self_check
+}
+
+# ---------------------------------------------------------------
+# 落地校验 —— 这份缓存到底能省掉什么
+#
+#   ⚠ 判断「会不会补编」不能只看二进制在不在，还要看 build_dir 里的戳在不在：
+#     include/host-build.mk 把 host 包的四个戳拆在两处
+#       INSTALLED  = staging_dir/hostpkg/stamp/.<pkg>_installed  ✅ 跟着缓存走
+#       BUILT      = build_dir/host/<pkg>/.built                 ❌ 不在缓存路径里
+#       CONFIGURED = build_dir/host/<pkg>/.configured            ❌
+#       PREPARED   = build_dir/host/<pkg>/.prepared*             ❌
+#     依赖是 installed ← built ← configured ← prepared，
+#     恢复后 built 那一层缺失 → make 会整条链重做 → golang / rust 完整自举一遍。
+#
+#     prebuilt 模式对此免疫：rust-prebuilt.mk 把 Host/Prepare|Configure|Compile
+#     全部置空、Install 只剩三个 ln -sfn，同一条链重跑只要几秒；
+#     source 模式则是真自举 —— 实测每次多写 13~14 GB、多花 20~40 分钟。
+# ---------------------------------------------------------------
+host_self_check() {
   local miss=""
   [ -x staging_dir/host/bin/gcc ] || miss="$miss gcc"
 
-  local go_hit
-  go_hit=$(find staging_dir -path '*/bin/go' \( -type f -o -type l \) 2>/dev/null | head -1)
-  [ -n "$go_hit" ] || miss="$miss go"
+  # ⚠ go / rustc 的检查必须同时认符号链接（-type f -o -type l）：
+  #   staging_dir/host/bin/go 常是指向 hostpkg/lib/go-*/bin/go 的链接，
+  #   prebuilt 模式下 rustc 则是指向 runner rustup 的链接，
+  #   只找 -type f 会把一份完好的缓存误报成「缺」。
+  local go_hit rustc_hit cargo_hit
+  go_hit=$(find staging_dir -path '*/bin/go'    \( -type f -o -type l \) 2>/dev/null | head -1)
+  rustc_hit=$(find staging_dir -path '*/bin/rustc' \( -type f -o -type l \) 2>/dev/null | head -1)
+  cargo_hit=$(find staging_dir -path '*/bin/cargo' \( -type f -o -type l \) 2>/dev/null | head -1)
+
+  echo "=== host 工具链自检 ==="
+  probe_bin() {  # <名字> <路径>
+    local name="$1" p="$2"
+    if [ -z "$p" ]; then echo "  $name : 不存在"; return 0; fi
+    if [ -L "$p" ] && [ ! -e "$p" ]; then
+      echo "  $name : ❌ 悬空符号链接 -> $(readlink "$p")"
+    elif [ -L "$p" ]; then
+      echo "  $name : 符号链接 -> $(readlink "$p")"
+    else
+      echo "  $name : 真实文件 $p"
+      "$p" --version 2>/dev/null | head -1 | sed "s/^/          /" || true
+    fi
+  }
+  probe_bin gcc   "$([ -x staging_dir/host/bin/gcc ] && echo staging_dir/host/bin/gcc)"
+  probe_bin go    "$go_hit"
+  probe_bin rustc "$rustc_hit"
+  probe_bin cargo "$cargo_hit"
+
+  # build_dir 的戳还在不在 —— 这决定 source 模式要不要重新自举。
+  # ⚠ 判据是「installed 戳在、built 戳不在」，不能只看有没有二进制：
+  #   前者才是 make 真正要追的目标；后者只有踩过完整链才会留下。
+  local nbuilt nconf nprep ninst
+  nbuilt=$(find build_dir/host build_dir/hostpkg -maxdepth 2 -type f -name '.built'      2>/dev/null | wc -l)
+  nconf=$( find build_dir/host build_dir/hostpkg -maxdepth 2 -type f -name '.configured' 2>/dev/null | wc -l)
+  nprep=$( find build_dir/host build_dir/hostpkg -maxdepth 2 -type f -name '.prepared*'  2>/dev/null | wc -l)
+  ninst=$(find staging_dir/host/stamp staging_dir/hostpkg/stamp -maxdepth 1 -type f -name '*_installed' 2>/dev/null | wc -l)
+  echo "  host 戳 installed=$ninst（staging_dir）  built=$nbuilt configured=$nconf prepared=$nprep（build_dir）"
+
+  if [ "$ninst" -gt 0 ] && [ "$nbuilt" -eq 0 ]; then
+    echo "::warning::host 包只有 installed 戳、build_dir 的 built 戳一个都没有 ——"
+    echo "          make 会重跑 installed←built←configured←prepared 整条链"
+    if [ "${HOST_MODE:-prebuilt}" = "source" ]; then
+      echo "          source 模式下这就是 golang / rust 自举，实测多花 20~40 分钟、多写 13~14 GB"
+      echo "          （build_dir 不在缓存路径里，所以同 key 精确命中也躲不掉）"
+    else
+      echo "          prebuilt 模式下被 rust-prebuilt.mk 挡掉（几秒），影响很小"
+    fi
+  elif [ "$nbuilt" -gt 0 ]; then
+    echo "✅ build_dir 的 built 戳也在，host 包的自举会整段跳过"
+  fi
 
   if [ -n "$miss" ]; then
     echo "::warning::恢复出来的缓存缺:$miss —— host 工具链不完整，本次仍会补编"
-    # 把两个 host bin 目录列出来，下一次能直接看出是「真没有」还是「路径不对」
     for d in staging_dir/host/bin staging_dir/hostpkg/bin; do
       [ -d "$d" ] || continue
       echo "  $d（前 15 项）:"
       ls -1 "$d" 2>/dev/null | head -15 | sed 's/^/    /'
     done
-  else
-    echo "✅ 缓存内容自检通过（gcc / go 均在）"
-    echo "   go: $go_hit"
   fi
 }
 
@@ -345,6 +492,16 @@ cmd_status() {
     [ -x staging_dir/host/bin/rustc ] && echo "rust: $(staging_dir/host/bin/rustc --version 2>&1 | head -1)"
     ls -d staging_dir/toolchain* 2>/dev/null | head -3
     echo ""
+    echo "=== build_dir（不在缓存里，决定要不要重新自举） ==="
+    for d in build_dir/host build_dir/hostpkg; do
+      [ -e "$d" ] || continue
+      printf '%-52s %s\n' "$d" "$(du -sh "$d" 2>/dev/null | cut -f1)"
+    done
+    printf '%-52s %s\n' "  .built 戳" \
+      "$(find build_dir/host build_dir/hostpkg -maxdepth 2 -type f -name '.built' 2>/dev/null | wc -l) 个"
+    printf '%-52s %s\n' "$HOST_STAMP_MIRROR（冻进缓存的镜像）" \
+      "$([ -d "$HOST_STAMP_MIRROR" ] && echo "$(du -sh "$HOST_STAMP_MIRROR" 2>/dev/null | cut -f1) / $(find "$HOST_STAMP_MIRROR" -type f 2>/dev/null | wc -l) 个戳" || echo 无)"
+    echo ""
     echo "=== 标记 ==="
     for f in tools/stamp-compile toolchain/stamp-compile tmp/.build; do
       printf '%-28s %s\n' "$f" "$([ -e "$f" ] && echo 有 || echo 无)"
@@ -361,10 +518,11 @@ case "$CMD" in
   prepare)  cmd_prepare ;;
   rollover) cmd_rollover ;;
   pack)     cmd_pack   "${3:-}" ;;
+  freeze)   cmd_freeze ;;
   unpack)   cmd_unpack "${3:-}" ;;
   status)   cmd_status ;;
   *)
-    echo "用法: $0 {key|prefix|prepare|rollover|pack|unpack|status} <openwrt_dir> [file]" >&2
+    echo "用法: $0 {key|prefix|prepare|freeze|rollover|pack|unpack|status} <openwrt_dir> [file]" >&2
     exit 1
     ;;
 esac
