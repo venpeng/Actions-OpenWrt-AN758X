@@ -89,15 +89,22 @@ jobs:
           echo "  令牌白名单（仅私有仓库）：${TOKEN_REPOS:-（空）}"
           echo "结论：$( [ "$NEED" = true ] && echo '至少一个需要凭证 → 申请 App 令牌' || echo '全部公开 → 跳过取凭证' )"
 
+      - name: Debug creds presence
+        run: |
+              echo "APP_ID       非空: ${{ secrets.PRIVATE_SOURCE_APP_ID != '' }}"
+              echo "APP_CLIENT_ID 非空: ${{ vars.PRIVATE_SOURCE_APP_CLIENT_ID != '' }}"
+              echo "PRIVATE_KEY  非空: ${{ secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY != '' }}"
+              echo "HAS_APP_CREDS  : ${HAS_APP_CREDS}"
       - name: Create private source token
         id: private-source-token
         # 没配 App 凭证就跳过（否则 action 抛 Input required and not supplied: app-id）
         if: ${{ steps.probe.outputs.need_token == 'true' && env.HAS_APP_CREDS == 'true' }}
         # 拿不到令牌不炸 job：交给 Setup 步骤回退 PAT
         continue-on-error: true
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.PRIVATE_SOURCE_APP_ID }}
+          client-id: ${{ secrets.PRIVATE_SOURCE_APP_CLIENT_ID }}
           private-key: ${{ secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           permission-contents: read

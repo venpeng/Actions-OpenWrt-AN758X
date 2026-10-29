@@ -1,12 +1,10 @@
 #!/bin/bash
 # ================================================================
-# diy-part2.sh —— 默认值定制（在 .config 加载之后运行）
-# 运行目录: ponwrt 源码根目录
-#
-#   1) 默认时区改成中国（Asia/Shanghai, CST-8）
-#   2) 5G WiFi：国家码 CN、信道 auto、频宽 160MHz
-#   3) 概览页「CPU 使用率（%）」行：显示 USR/SYS + 每个核心的明细
-#
+# diy-part2.sh —— 默认值定制（在 .config 加载之后运行，cwd = ponwrt 根）
+#   1) 时区 Asia/Shanghai (CST-8)
+#   2) 5G WiFi：CN / auto / HE160
+#   3) 概览页 CPU 行：USR/SYS + 每核明细
+#   4) 固件版本追加作者与构建时间
 # ================================================================
 
 set -euo pipefail
@@ -74,15 +72,10 @@ if [ -f .config ]; then
 fi
 
 # ---------------------------------------------------------
-# 4. 5G WiFi：国家码 CN / 信道 auto / 频宽 160MHz
-#
-#    分两层落地：
-#      a) 编译期：改无线 detect 脚本的默认值（best effort，找不到就跳过）
-#      b) 运行期：uci-defaults 首启强制刷（主要手段，与保留配置升级都生效）
-#
-#    说明：不同版本 detect 脚本路径不同（有的叫 mac80211.sh / mac80211.uc），
-#    且 uci-defaults 执行时 /etc/config/wireless 可能尚未生成，
-#    故 uci-defaults 里自带「未生成就先生成」的逻辑。
+# 4. 5G WiFi：CN / auto / HE160
+#   分两层：编译期改 detect 脚本默认值（best effort，各版本路径不同）；
+#   运行期用 uci-defaults 首启强制刷（主要手段，保留配置升级也生效，且自带
+#   「wireless 尚未生成就先 wifi config」的逻辑）。
 # ---------------------------------------------------------
 
 # ---- 4a. 编译期：改 detect 脚本默认值（best effort） ----
@@ -191,16 +184,10 @@ if [ -f .config ]; then
 fi
 
 # ---------------------------------------------------------
-# 5. 概览页「CPU 使用率（%）」行：显示 USR/SYS + 每核明细
-#
-#    ImmortalWrt 的 luci 把这一行的值写成
-#      luci.getCPUUsage → popen("top -n1 | awk '/^CPU/ {printf(\"%d%\", 100 - $8)}'")
-#    只有一个总占用率。这里把它改指到 files/sbin/cpuusage（rootfs 覆盖，
-#    已由 workflow 第 6 步拷进源码树的 files/），前端 10_system.js 与 ACL
-#    都不用动。
-#
-#    脚本负责判断、打补丁与自检，找不到目标只 warning 不中断编译 ——
-#    这是纯显示层的东西，不该让它把一次几小时的构建搞挂。
+# 5. 概览页「CPU 使用率（%）」行：USR/SYS + 每核明细
+#   luci 原本是 popen("top -n1 | awk ...") 的单值。这里只把它改指到
+#   files/sbin/cpuusage，前端 10_system.js 与 ACL 都不动。
+#   纯显示层：找不到目标只 warning，不让它把几小时的构建搞挂。
 # ---------------------------------------------------------
 PATCH_CPUUSAGE="$(dirname "$0")/scripts/patch-luci-cpuusage.sh"
 if [ -f "$PATCH_CPUUSAGE" ]; then

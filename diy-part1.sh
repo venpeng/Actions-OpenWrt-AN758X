@@ -18,23 +18,30 @@ mkdir -p "$PKG_DIR"
 # 温度不再用 luci-app-temp-status —— 由 autocore 的 /sbin/tempinfo 提供，
 # 见 files/sbin/tempinfo（概览页「温度」行：CPU / WiFi / PON 温度 + 光功率）
 # ---------------------------------------------------------
+# ⚠ 下面这些包都在 configs/an7581.config 与 an7583.config 里 =y 了，
+#   关掉开关会让 defconfig 把 =y 静默剔除 —— 两处必须一起改。
+#
+# ⚠ 标了「只用 feeds」的四个，是它们的本体（mosdns / smartdns / xray-core /
+#   sing-box）feeds 里已经有同名包，第三方源再拉一份会让索引里出现两个同名
+#   Package，package-metadata 按扫描顺序挑一个，行为不可预期。所以只拷 luci
+#   前端，本体一律用 feeds 的。
 ADD_AIROHA_NPU=true    # luci-app-airoha-npu：Airoha SoC 状态页（NPU/CPU/Frame Engine/PPE）
-ADD_FLUENT=true       # luci-theme-fluent：Fluent 2 风格主题
+ADD_FLUENT=true        # luci-theme-fluent：Fluent 2 风格主题
 ADD_FLUENT_LITE=false  # luci-theme-fluent-lite：轻量版（与 fluent 互斥，二选一）
 ADD_FLUENT_DASH=false  # luci-mod-fluentdashboard：可选状态概览卡片
-ADD_PASSWALL=false     # luci-app-passwall（含依赖源）
-ADD_OPENCLASH=false    # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
-ADD_MOSDNS=false       # luci-app-mosdns + v2ray-geodata
-ADD_LUCKY=false        # luci-app-lucky（DDNS + socat）
-ADD_TAILSCALE=false    # luci-app-tailscale
-ADD_OPENLIST=false     # luci-app-openlist2（alist/openlist 挂载）
-ADD_SMARTDNS=false     # luci-app-smartdns
-ADD_EASYTIER=false     # luci-app-easytier（另需 kmod-tun + easytier 本体，Rust 编译较慢）
-ADD_POWEROFF=false     # luci-app-poweroffdevice（关机）
-ADD_OWQ_WOL=false      # luci-app-owq-wol（网络唤醒，依赖 etherwake）
-ADD_WATCHDOG=false     # luci-app-watchdog（看门狗，包在子目录，需特殊处理）
-ADD_TASKPLAN=false     # luci-app-taskplan（定时任务）
-ADD_OAF=false          # luci-app-oaf（应用过滤，含内核模块，高风险）
+ADD_PASSWALL=true      # luci-app-passwall（只用 feeds 的依赖包）
+ADD_OPENCLASH=true     # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
+ADD_MOSDNS=true        # luci-app-mosdns（本体只用 feeds 的 mosdns）
+ADD_LUCKY=true         # luci-app-lucky（DDNS + socat）
+ADD_TAILSCALE=true     # luci-app-tailscale（本体只用 feeds 的 tailscale）
+ADD_OPENLIST=true      # luci-app-openlist2（alist/openlist 挂载）
+ADD_SMARTDNS=true      # luci-app-smartdns（本体只用 feeds 的 smartdns）
+ADD_EASYTIER=true      # luci-app-easytier（另需 kmod-tun + easytier 本体，Rust 编译较慢）
+ADD_POWEROFF=true      # luci-app-poweroffdevice（关机）
+ADD_OWQ_WOL=true       # luci-app-owq-wol（网络唤醒，依赖 etherwake）
+ADD_WATCHDOG=true      # luci-app-watchdog（看门狗，包在子目录，需特殊处理）
+ADD_TASKPLAN=true      # luci-app-taskplan（定时任务）
+ADD_OAF=true           # luci-app-oaf（应用过滤，含内核模块，高风险）
 ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
                         #   └─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
@@ -50,7 +57,11 @@ ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
 # target，界面和后端都围着重型 FTTR 主从设备转。workflow 会把 PROFILE
 # 导出成环境变量，非 2004 机型直接跳过，不白花 clone 时间；本地手工跑
 # （PROFILE 为空）按 2004 处理。
-FTTR_PROFILE="${PROFILE:-h3c_hm2004-du}"
+# ⚠ 不能默认成 h3c_hm2004-du：warm-cache.yml 也会调这个脚本，而它不设
+#   PROFILE（缓存与机型无关），更没有私有仓库凭证那三步 —— 默认成 h3c 会让
+#   它去 clone 私有仓库 openwrt-fttr，然后因 "could not read Username" 失败。
+#   本地手工跑 h3c 机型时，显式 PROFILE=h3c_hm2004-du 即可。
+FTTR_PROFILE="${PROFILE:-none}"
 
 clone() {  # clone <url> <dir> [branch]
   local url="$1" dir="$2" br="$3"
@@ -97,31 +108,18 @@ fi
 
 # =========================================================
 # h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware —— FTTR 后端三件套 ★HM2004-DU 专属
-#
 # 源：qwe-qaq/openwrt-fttr（私有仓库）
-#   凭证由 workflow 用 GIT_ASKPASS 注入（见 build-ponwrt.yml 的
-#   Create private source token / Prepare private Git authentication /
-#   Setup private repo credentials 三步）：git 被要求认证时才回调
-#   scripts/git_askpass.sh 取令牌，所以这里照旧用「裸 URL」——
-#   千万别在这里拼 token，clone 的 echo 会把它打进日志。
-#   ⚠ 这个仓库是 feed 形态：根目录直接就是三个包目录，没有 package/ 子目录，
-#     也没有顶层 Makefile。所以按目录名直接拷进 package/custom/ 即可 ——
-#     目录名必须等于包名（package.mk: PKG_NAME ?= $(notdir ${CURDIR})），
-#     否则 config 里的 CONFIG_PACKAGE_xxx 符号对不上。
-#
-#   h3c-fmcs           KernelPackage，索引里的名字带 kmod- 前缀 → kmod-h3c-fmcs
-#                      DEPENDS 含 @(TARGET_airoha_an7581)，非 an7581 不进索引
-#                      另依赖 +kmod-spi-gpio
-#   h3c-fttr-tools     Rust 包，硬 include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
-#                      DEPENDS: +kmod-h3c-fmcs +mosquitto-client +mosquitto-ssl
-#                               +uci +ubus +firewall4 +dnsmasq
+# ⚠ 这里必须用「裸 URL」：凭证由 workflow 的 GIT_ASKPASS 在认证时回调注入，
+#   千万别拼 token —— clone 的 echo 会把它打进日志。
+# ⚠ 该仓库是 feed 形态（根目录直接是三个包目录），按目录名拷进 package/custom/
+#   即可；目录名必须等于包名（PKG_NAME ?= $(notdir $(CURDIR)）），否则 config
+#   里的 CONFIG_PACKAGE_xxx 对不上。
+#   h3c-fmcs           KernelPackage → 索引里叫 kmod-h3c-fmcs，DEPENDS 限定
+#                      @(TARGET_airoha_an7581)，另依赖 +kmod-spi-gpio
+#   h3c-fttr-tools     Rust 包，硬 include feeds/packages/lang/rust/rust-package.mk
 #   h3c-fmcs-firmware  纯数据包，FPGA 比特流 → /lib/firmware/FTTR_TOP.sbit
-#                      （仓库内是实文件 2.0MB，不是 Git LFS 指针，可直接 clone 拿到）
-#
-# ⚠ 下面索引校验循环里 h3c-fmcs 这一行会显示 ❌：循环按「目录名」查，
-#   而 KernelPackage 在 tmp/.packageinfo 里记的是 kmod-h3c-fmcs。
-#   INDEX_MISS 只会产生 ::warning::，真正的硬校验在后面按 kmod-h3c-fmcs 查，
-#   不受影响 —— 看到 ❌ 不用慌。
+# ⚠ h3c-fmcs 是 KernelPackage，索引里的名字是 kmod-h3c-fmcs。下面的包索引
+#   校验内置了这层映射（pkgname_of），看到的是 ✅ h3c-fmcs → kmod-h3c-fmcs。
 # =========================================================
 if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   # 仓库与分支由 workflow 注入，本地手工跑时回退到下面的默认值
@@ -129,7 +127,7 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   FTTR_FEED_BRANCH="${PRIVATE_REPO_BRANCH:-main}"
   FTTR_FEED_TMP="$(mktemp -d)/openwrt-fttr"
   if ! clone "$FTTR_FEED_URL" "$FTTR_FEED_TMP" "$FTTR_FEED_BRANCH"; then
-    echo "::error::openwrt-fttr 拉取失败：${FTTR_REPO} (分支 ${FTTR_BRANCH})，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware 会被 defconfig 剔除"
+    echo "::error::openwrt-fttr 拉取失败：${FTTR_FEED_URL} (分支 ${FTTR_FEED_BRANCH})，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware 会被 defconfig 剔除"
     echo "        公开仓库失败=仓库/分支名不对；私有仓库缺凭证=优先查 GitHub App（PRIVATE_SOURCE_APP_ID / PRIVATE_SOURCE_APP_PRIVATE_KEY，App 要装到该仓库且 Contents: Read-only），回退才看 Secret PRIVATE_REPO_TOKEN 是否有效（PAT 需对该仓库有 Contents 读权限）"
     exit 1
   fi
@@ -162,16 +160,11 @@ fi
 
 # =========================================================
 # luci-app-fttr —— FTTR 管理界面（网络 → FTTR）★HM2004-DU 专属
-#
 # 源：LazuliKao/luci-app-fttr（monorepo，包在 package/luci-app-fttr/ 子目录）
-#   ⚠ 和 fluent / qwe3017/luci-app 一样是「包在子目录」结构，不能整仓丢进
-#     package/custom —— buildroot 扫 package/ 只到 -maxdepth 5，整仓进去
-#     会把 src/、package/ 一起扫，包符号还对不上。必须拷子目录。
-#
-# 依赖（Makefile 里的 LUCI_DEPENDS）：
-#   +luci-base +rpcd +ucode +ucode-mod-fs +h3c-fttr-tools
-#   前四个 feeds 里有；h3c-fttr-tools（fttrctl 后端 + ucode 运行时）不在
-#   ImmortalWrt feeds，也不在 pon_drivers / pon_userspace —— 见下方硬校验。
+# ⚠ 不能整仓丢进 package/custom：buildroot 只扫到 -maxdepth 5，整仓会把
+#   src/、package/ 一起扫，包符号还对不上。必须拷子目录。
+# 依赖 +luci-base +rpcd +ucode +ucode-mod-fs +h3c-fttr-tools，后者不在
+# ImmortalWrt feeds —— 见下方硬校验。
 # =========================================================
 if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   FTTR_TMP="$(mktemp -d)/fttr"
@@ -219,14 +212,9 @@ if [ "$ADD_AIROHA_NPU" = "true" ]; then
   echo "   版本: $(grep -m1 '^PKG_VERSION' "$PKG_DIR/luci-app-airoha-npu/Makefile" 2>/dev/null)"
   # =========================================================
   # 关键：po 文件名必须改成 airoha-npu.po
-  #
-  # luci.mk 的 i18n install 规则：
-  #   po2lmo $(po) → $(LUCI_LIBRARYDIR)/i18n/$(basename $(notdir $(po))).$(lang).lmo
-  # 即 lmo 名取自 po 文件主名。而运行时按
-  #   LUCI_BASENAME = $(patsubst luci-app-%,%,luci-app-airoha-npu) = airoha-npu
-  # 查找 lmo。上游两份 po 都叫 luci-app-airoha-npu.po，
-  # 会生成 luci-app-airoha-npu.zh-cn.lmo，前端找不到 → 中文不生效。
-  # 官方 app 都是 basename 命名（firewall.po / package-manager.po / pon.po）。
+  #   luci.mk 的 i18n 规则按 po 主名生成 lmo，运行时却按 LUCI_BASENAME
+  #   （= airoha-npu）查找。上游两份 po 都叫 luci-app-airoha-npu.po，会生成
+  #   luci-app-airoha-npu.zh-cn.lmo → 前端找不到 → 中文不生效。
   # =========================================================
   PODIR="$PKG_DIR/luci-app-airoha-npu/po"
   if [ -f "$PODIR/zh_Hans/luci-app-airoha-npu.po" ]; then
@@ -243,10 +231,21 @@ if [ "$ADD_AIROHA_NPU" = "true" ]; then
 fi
 
 # --- passwall ---
+# 源已从 xiaorouji 迁到 Openwrt-Passwall 组织（旧地址 404）。
+# ⚠ 只拷 luci-app-passwall 子目录：openwrt-passwall-packages 是 monorepo，
+#   里面 xray-core / sing-box / hysteria / naiveproxy / shadowsocks-rust …
+#   全部与 feeds 同名，整仓拷进来就是两份同名包。依赖一律用 feeds 的。
 if [ "$ADD_PASSWALL" = "true" ]; then
-  clone https://github.com/xiaorouji/openwrt-passwall-packages "$PKG_DIR/openwrt-passwall-packages" main
-  clone https://github.com/xiaorouji/openwrt-passwall "$PKG_DIR/openwrt-passwall" main
-  rm -rf "$PKG_DIR/openwrt-passwall/luci-app-passwall2" 2>/dev/null
+  PW_TMP="$(mktemp -d)/pw"
+  if clone https://github.com/Openwrt-Passwall/openwrt-passwall "$PW_TMP" main \
+     && [ -f "$PW_TMP/luci-app-passwall/Makefile" ]; then
+    rm -rf "$PKG_DIR/luci-app-passwall"
+    cp -r "$PW_TMP/luci-app-passwall" "$PKG_DIR/"
+    echo "✅ 已拷贝: luci-app-passwall"
+  else
+    echo "::error::luci-app-passwall 拉取失败或结构变化"
+  fi
+  rm -rf "$PW_TMP"
 fi
 # --- openclash ---
 if [ "$ADD_OPENCLASH" = "true" ]; then
@@ -256,9 +255,28 @@ if [ "$ADD_OPENCLASH" = "true" ]; then
   rm -rf "$PKG_DIR/OpenClash"
 fi
 # --- mosdns ---
+# ⚠ 只拷 luci-app-mosdns 子目录：仓库里还带 mosdns 本体与 v2ray-geodata，
+#   两个都与 feeds 同名。本体用 feeds 的。
 if [ "$ADD_MOSDNS" = "true" ]; then
-  clone https://github.com/sbwml/luci-app-mosdns "$PKG_DIR/luci-app-mosdns" v5
-  clone https://github.com/sbwml/v2ray-geodata "$PKG_DIR/v2ray-geodata" master
+  MD_TMP="$(mktemp -d)/mosdns"
+  if clone https://github.com/sbwml/luci-app-mosdns "$MD_TMP" v5 \
+     && [ -f "$MD_TMP/luci-app-mosdns/Makefile" ]; then
+    rm -rf "$PKG_DIR/luci-app-mosdns" "$PKG_DIR/geo2txt"
+    cp -r "$MD_TMP/luci-app-mosdns" "$PKG_DIR/"
+    # geo2txt 是 luci-app-mosdns 的硬依赖（LUCI_DEPENDS 里 +geo2txt），
+    # feeds 里没有同名包，必须一起拷进来，否则索引时报
+    # "has a dependency on 'geo2txt', which does not exist"
+    if [ -f "$MD_TMP/geo2txt/Makefile" ]; then
+      cp -r "$MD_TMP/geo2txt" "$PKG_DIR/"
+      echo "✅ 已拷贝: geo2txt（luci-app-mosdns 依赖）"
+    else
+      echo "::warning::mosdns 仓库里没有 geo2txt，luci-app-mosdns 会缺这个依赖"
+    fi
+    echo "✅ 已拷贝: luci-app-mosdns（本体用 feeds）"
+  else
+    echo "::error::luci-app-mosdns 拉取失败或结构变化"
+  fi
+  rm -rf "$MD_TMP"
 fi
 # --- lucky ---
 if [ "$ADD_LUCKY" = "true" ]; then
@@ -273,9 +291,10 @@ if [ "$ADD_OPENLIST" = "true" ]; then
   clone https://github.com/sbwml/luci-app-openlist2 "$PKG_DIR/luci-app-openlist2" main
 fi
 
+# --- smartdns ---
+# ⚠ 不拉 pymumu/smartdns 本体：与 feeds/packages/net/smartdns 同名。
 if [ "$ADD_SMARTDNS" = "true" ]; then
   clone https://github.com/pymumu/luci-app-smartdns "$PKG_DIR/luci-app-smartdns" master
-  clone https://github.com/pymumu/smartdns "$PKG_DIR/smartdns" master
 fi
 # --- luci-theme-fluent ---
 # ⚠ 包在仓库的 package/ 子目录下，不能直接 clone 到 package/custom，
@@ -302,7 +321,7 @@ if [ "$ADD_EASYTIER" = "true" ]; then
   clone https://github.com/EasyTier/luci-app-easytier "$PKG_DIR/luci-app-easytier" main
 fi
 if [ "$ADD_POWEROFF" = "true" ]; then
-  clone https://github.com/sirpdboy/luci-app-poweroffdevice "$PKG_DIR/luci-app-poweroffdevice" main
+  clone https://github.com/sirpdboy/luci-app-poweroffdevice "$PKG_DIR/luci-app-poweroffdevice" master
 fi
 if [ "$ADD_OWQ_WOL" = "true" ]; then
   clone https://github.com/isalikai/luci-app-owq-wol "$PKG_DIR/luci-app-owq-wol" main
@@ -310,11 +329,22 @@ fi
 if [ "$ADD_TASKPLAN" = "true" ]; then
   clone https://github.com/sirpdboy/luci-app-taskplan "$PKG_DIR/luci-app-taskplan" main
 fi
-if [ "$ADD_WATCHDOG" = "true" ]; then   # 包在子目录，必须拷出子目录，不能整仓丢进去
+# --- watchdog ---
+# ⚠ 仓库是 monorepo：根目录无 Makefile，luci-app-watchdog/（前端）与
+#   watchdog/（本体）是两个包，前者依赖 +watchdog，两个都要拷。
+#   只拷前端时索引会报 "has a dependency on 'watchdog', which does not exist"。
+if [ "$ADD_WATCHDOG" = "true" ]; then
   WD_TMP="$(mktemp -d)/wd"
-  clone https://github.com/sirpdboy/luci-app-watchdog "$WD_TMP" main
-  rm -rf "$PKG_DIR/luci-app-watchdog"
-  cp -r "$WD_TMP/luci-app-watchdog" "$PKG_DIR/luci-app-watchdog"
+  if clone https://github.com/sirpdboy/luci-app-watchdog "$WD_TMP" main; then
+    for p in luci-app-watchdog watchdog; do
+      [ -f "$WD_TMP/$p/Makefile" ] || { echo "::warning::$p 不存在（上游改结构了？）"; continue; }
+      rm -rf "$PKG_DIR/$p"
+      cp -r "$WD_TMP/$p" "$PKG_DIR/"
+      echo "✅ 已拷贝: $p"
+    done
+  else
+    echo "::error::luci-app-watchdog 拉取失败"
+  fi
   rm -rf "$WD_TMP"
 fi
 if [ "$ADD_OAF" = "true" ]; then
@@ -341,34 +371,13 @@ for p in luci-app-natmode luci-app-pon-status; do
 done
 # ---------------------------------------------------------
 # 补回 libffi —— python3(3.14) 的 _ctypes 硬性需要
-#
-# 背景（2026-10-20 实测）：
-#   1) CPython 自 3.11 起删除了 --with-system-ffi 选项，官方措辞是
-#      "libffi must now always be supplied by the system on all
-#      non-Windows platforms"。也就是说不管传不传这个参数，
-#      _ctypes 都会 #include <ffi.h>。
-#   2) 但 ponwrt 源码树的 package/libs/libffi/Makefile 不存在
-#      （pbs05/ponwrt 与 qwe3017/ponwrt 都是 404），
-#      packages feed 里也早已迁走（immortalwrt/packages 的
-#      libs/libffi 同样是 404）。结果整棵树没有 libffi：
-#      编译日志里一行 libffi 都没有，staging_dir 下没有
-#      ffi.h / libffi.pc。
-#   3) python3 的 Makefile 还只给 HOST_BUILD_DEPENDS 写了 libffi/host，
-#      target 侧 python3-light 的 DEPENDS 里没有 +libffi，
-#      python3-ctypes 子包才有 —— 依赖指向不存在的包会被 defconfig
-#      静默丢弃，python3 照样进编译列表，编到 _ctypes.c 才炸：
-#        ./Modules/_ctypes/_ctypes.c:119:10: fatal error: ffi.h:
-#        No such file or directory
-#      → make[5] Error 1 → package/feeds/packages/python3 failed to build
-#        → world Error 2
-#
-# 处理：从 immortalwrt 基座取现成的包定义（3.4.7，自带 Build/InstallDev，
-#       会把 ffi.h / ffitarget.h / fficonfig.h / libffi.pc 装进
-#       staging_dir/target-*/usr/{include,lib/pkgconfig}），
-#       再给 python3 补一条 target 侧构建依赖保证编译顺序。
-#
-# ⚠ 必须放在 prepare-tmpinfo 之前：目录要被扫进索引，
-#    PKG_BUILD_DEPENDS 也要在 tmpinfo 里生效。
+#   CPython 自 3.11 起删掉了 --with-system-ffi，_ctypes 永远 #include <ffi.h>；
+#   而 ponwrt 与 immortalwrt/packages 的 libffi 目录都已不存在，整棵树里没有
+#   ffi.h / libffi.pc，于是编到 _ctypes.c 才炸：
+#     ./Modules/_ctypes/_ctypes.c:119:10: fatal error: ffi.h: No such file...
+#   处理：从 immortalwrt 基座取现成的包定义（自带 Build/InstallDev，会把
+#   ffi.h / libffi.pc 装进 staging_dir），再给 python3 补一条构建依赖。
+# ⚠ 必须放在 prepare-tmpinfo 之前：目录要被扫进索引，PKG_BUILD_DEPENDS 也要生效。
 # ---------------------------------------------------------
 FFI_DIR="package/custom/libffi"
 if [ ! -d "$FFI_DIR" ]; then
@@ -403,33 +412,28 @@ fi
 # 所有包符号都不存在。
 # ---------------------------------------------------------
 echo "--- 检查重复嵌套目录 ---"
+# ⚠ 判据必须包含「根目录也有 Makefile」，否则会误删 monorepo 的真包：
+#   lucky / openlist2 / easytier / taskplan / poweroffdevice 的仓库根目录【没有】
+#   Makefile，同名子目录才是唯一的那份包 —— 只看「有同名子目录」就会把它们
+#   当重复项删掉，包从索引里消失、config 的 =y 被 defconfig 静默剔除。
+#   只有 rchen14b/luci-app-airoha-npu 那种「根目录一份 + 同名子目录又一份」
+#   才是要清理的坏结构（内层 dump 失败会中断整个 custom feed 的索引）。
 for d in "$PKG_DIR"/*; do
   [ -d "$d" ] || continue
   n=$(basename "$d")
-  if [ -d "$d/$n" ] && [ -f "$d/$n/Makefile" ]; then
+  if [ -f "$d/Makefile" ] && [ -d "$d/$n" ] && [ -f "$d/$n/Makefile" ]; then
     rm -rf "$d/$n"
     echo "✅ 已移除重复嵌套目录: $n/$n"
   fi
 done
 # ---------------------------------------------------------
 # 让新包进入索引
-#
-#   ⚠️ 判据是 tmp/.packageinfo，不是 package/feeds/custom
-#
-#   OpenWrt 的 prepare-tmpinfo 直接扫 package/ 目录树：
-#     include/scan.mk:  find -L package -mindepth 1 -maxdepth 5 -name Makefile
-#   package/custom/<pkg>/Makefile 深度只有 3，本来就会被扫到，
-#   **根本不需要注册 feed**。
-#
-#   以前那套 src-link custom feed 有两个问题：
-#     ① feeds/custom 指向 package/custom，而 feeds/base 已经指向 ../package，
-#        同一批 Makefile 被扫两遍，package-metadata.pl 按 Override 挑一个，
-#        行为随扫描顺序漂移；
-#     ② scripts/feeds 的 install_src() 里，$installed{$name} 已经非空
-#        （就是 ① 扫出来的那份），于是直接 return 0，压根不建
-#        package/feeds/custom/<pkg> 符号链接 ——
-#        所以「package/feeds/custom 不存在」是**正常现象**，不是索引失败。
-#        拿它当判据必然误报。
+#   ⚠ 判据是 tmp/.packageinfo，不是 package/feeds/custom
+#   prepare-tmpinfo 直接扫 package/ 树（scan.mk: find -L package -maxdepth 5），
+#   package/custom/<pkg>/Makefile 深度 3，本来就会被扫到，**不需要注册 feed**。
+#   旧的 src-link custom feed 有两个坑：① 同一批 Makefile 被扫两遍，按 Override
+#   挑一个、行为随扫描顺序漂移；② install_src() 看到 $installed 非空直接 return，
+#   压根不建 package/feeds/custom/<pkg> —— 所以它不存在是正常的，拿它当判据必然误报。
 # ---------------------------------------------------------
 if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   # =========================================================
@@ -449,19 +453,52 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   echo "=========================================="
   echo "package/custom 内容："
   INDEX_MISS=""
+  # 目录名 ≠ 包名的情况（Makefile 里显式写了 PKG_NAME / KernelPackage）：
+  #   open-app-filter 的包是 appfilter、oaf 的 KernelPackage 是 kmod-oaf，
+  #   按目录名去索引里查必然查不到 —— 那是误报，不是索引失败。
+  pkgname_of() {
+    case "$1" in
+      open-app-filter) echo "appfilter" ;;
+      oaf)             echo "kmod-oaf" ;;
+      h3c-fmcs)        echo "kmod-h3c-fmcs" ;;
+      *)               echo "$1" ;;
+    esac
+  }
+
   for d in "$PKG_DIR"/*; do
     [ -d "$d" ] || continue
     n=$(basename "$d")
+
+    # 无根 Makefile = monorepo 容器（lucky / openlist2 / easytier / taskplan /
+    # poweroffdevice / watchdog），真正的包在同名子目录里，逐个查
     if [ ! -f "$d/Makefile" ]; then
-      echo "  -  $n（无根 Makefile，视为源仓库/子包容器，跳过）"
+      found=0
+      # 直接对 glob 迭代，不拼字符串再分词 —— 拼了就得依赖 IFS 分词，
+      # 换个 shell（zsh 默认不拆）行为就变
+      for sd in "$d"/*/Makefile; do
+        [ -f "$sd" ] || continue
+        found=1
+        sn="$(basename "$(dirname "$sd")")"
+        if grep -qx "Package: $sn" tmp/.packageinfo 2>/dev/null; then
+          echo "  ✅ $n → $sn"
+        else
+          echo "  ❌ $n → $sn —— tmp/.packageinfo 里查不到"
+          INDEX_MISS="$INDEX_MISS $sn"
+          for f in "logs/package/$sn/dump.txt" "logs/package/custom/$sn/dump.txt"; do
+            [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; }
+          done
+        fi
+      done
+      [ "$found" = 1 ] || echo "  -  $n（无 Makefile，跳过）"
       continue
     fi
-    # 目录名即包名：buildroot 约定 PKG_NAME ?= $(notdir ${CURDIR})
-    if grep -qx "Package: $n" tmp/.packageinfo 2>/dev/null; then
-      echo "  ✅ $n"
+
+    pn="$(pkgname_of "$n")"
+    if grep -qx "Package: $pn" tmp/.packageinfo 2>/dev/null; then
+      echo "  ✅ $n${pn:+$([ "$pn" != "$n" ] && echo " → $pn")}"
     else
-      echo "  ❌ $n —— tmp/.packageinfo 里查不到"
-      INDEX_MISS="$INDEX_MISS $n"
+      echo "  ❌ $n（包名 $pn）—— tmp/.packageinfo 里查不到"
+      INDEX_MISS="$INDEX_MISS $pn"
       # 真实错误在这里（scan.mk 落盘路径 logs/<SCAN_DIR>/<相对目录>/dump.txt）
       for f in "logs/package/$n/dump.txt" "logs/package/custom/$n/dump.txt"; do
         [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; }
@@ -478,6 +515,25 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   if [ "$ADD_LUCI_APP" = "true" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi
+
+  # 与 configs/an7581.config / an7583.config 里 =y 的包一一对应。
+  # 任一项没进索引，defconfig 都会把那个 =y 静默剔除 —— 编出来的固件少了菜单
+  # 还不易察觉。所以这里和 config 必须同步改。
+  [ "$ADD_FLUENT"    = "true" ] && REQUIRED="$REQUIRED luci-theme-fluent"
+  [ "$ADD_OPENCLASH" = "true" ] && REQUIRED="$REQUIRED luci-app-openclash"
+  [ "$ADD_PASSWALL"  = "true" ] && REQUIRED="$REQUIRED luci-app-passwall"
+  [ "$ADD_MOSDNS"    = "true" ] && REQUIRED="$REQUIRED luci-app-mosdns"
+  [ "$ADD_LUCKY"     = "true" ] && REQUIRED="$REQUIRED luci-app-lucky"
+  [ "$ADD_TAILSCALE" = "true" ] && REQUIRED="$REQUIRED luci-app-tailscale"
+  [ "$ADD_OPENLIST"  = "true" ] && REQUIRED="$REQUIRED luci-app-openlist2"
+  [ "$ADD_SMARTDNS"  = "true" ] && REQUIRED="$REQUIRED luci-app-smartdns"
+  [ "$ADD_EASYTIER"  = "true" ] && REQUIRED="$REQUIRED luci-app-easytier"
+  [ "$ADD_POWEROFF"  = "true" ] && REQUIRED="$REQUIRED luci-app-poweroffdevice"
+  [ "$ADD_OWQ_WOL"   = "true" ] && REQUIRED="$REQUIRED luci-app-owq-wol"
+  [ "$ADD_WATCHDOG"  = "true" ] && REQUIRED="$REQUIRED luci-app-watchdog"
+  [ "$ADD_TASKPLAN"  = "true" ] && REQUIRED="$REQUIRED luci-app-taskplan"
+  [ "$ADD_OAF"       = "true" ] && REQUIRED="$REQUIRED luci-app-oaf"
+  true
   if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
     # KernelPackage 生成的包名带 kmod- 前缀，索引里写的是 kmod-h3c-fmcs
     if [ "$ADD_FMCS" = "true" ]; then
@@ -491,15 +547,10 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
     fi
     REQUIRED="$REQUIRED luci-app-fttr"
     # =========================================================
-    # luci-app-fttr 的 LUCI_DEPENDS 里有 +h3c-fttr-tools（fttrctl 后端），
-    # 而 h3c-fttr-tools 又依赖 +kmod-h3c-fmcs。链条上任何一节不在树里，
-    # defconfig 都会静默把整条 FTTR 剔掉 —— 与其编出一个「没有 FTTR 界面」
-    # 的固件还不易察觉，不如在这里直接报错。
-    #
-    # h3c-fttr-tools 进不了索引的最常见原因是缺 Rust 支持：它 include 了
-    # feeds/packages/lang/rust/rust-package.mk，没有 packages feed（或没装
-    # rust）时这个包根本不会被扫到。kmod-h3c-fmcs 则受
-    # @(TARGET_airoha_an7581) 限制，非该 target 时同样不进索引。
+    # luci-app-fttr 依赖 +h3c-fttr-tools，后者依赖 +kmod-h3c-fmcs。
+    # 链条上任一节不在树里，defconfig 都会静默把整条 FTTR 剔掉 —— 与其编出
+    # 一个没有 FTTR 界面的固件还不易察觉，不如在这里直接报错。
+    # 前者最常见原因是缺 rust-package.mk；后者受 @(TARGET_airoha_an7581) 限制。
     # =========================================================
     if [ "$ADD_FTTR_TOOLS" = "true" ] &&
        ! grep -qx "Package: h3c-fttr-tools" tmp/.packageinfo 2>/dev/null; then

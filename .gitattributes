@@ -1,0 +1,11 @@
+# 统一换行：CI 里跑的是 Linux bash，脚本一旦被 Windows 端存成 CRLF
+# 就会报 "$'\r': command not found" / "No such file or directory"。
+# 仓库本身盯住 eol=lf，比在每个 workflow 里撒 dos2unix 更可靠
+# （dos2unix 只处理「已经在 runner 上」的那些文件，漏一个就炸）。
+#
+# 只覆盖这三类：shell / jq / workflow。
+# configs/*.config 故意不列 —— 它们已经在仓库里存成 LF 了，
+# 列上会让下次 git add 时整片 config 显示为「已修改」，纯噪音。
+*.sh  text eol=lf
+*.jq  text eol=lf
+*.yml text eol=lf

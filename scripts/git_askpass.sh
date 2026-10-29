@@ -4,20 +4,16 @@
 #
 # 用法（build-ponwrt.yml 里已配好）：
 #   install -m 700 scripts/git_askpass.sh "$RUNNER_TEMP/git-askpass"
-#   echo "GIT_ASKPASS=$RUNNER_TEMP/git-askpass" >> "$GITHUB_ENV"
-#   echo "GIT_TERMINAL_PROMPT=0"                >> "$GITHUB_ENV"
+#   然后导出 GIT_ASKPASS=$RUNNER_TEMP/git-askpass、GIT_TERMINAL_PROMPT=0
 #
-# 令牌来源（二选一，优先文件）：
-#   GH_TOKEN_FILE  600 权限的令牌文件路径（推荐：令牌不进任何进程的 env）
-#   GH_REPO_TOKEN  直接放令牌（create-github-app-token 的输出会被自动 add-mask）
+# 令牌来源（优先文件）：
+#   GH_TOKEN_FILE  600 权限的令牌文件路径（令牌不进任何进程的 env）
+#   GH_REPO_TOKEN  直接放令牌（App 令牌输出会被自动 add-mask）
 #
-# 为什么用 askpass 而不是 url.*.insteadOf：
-#   insteadOf 会把 user:token@ 写进 ~/.gitconfig 落盘，且和 checkout 注入的
-#   http.https://github.com/.extraheader 抢优先级（后者写本地 .git/config，
-#   本地优先级更高，会直接盖掉令牌导致 404）。askpass 只在 git 真正被要求
-#   认证时才调用，不写任何配置、不改 clone URL，diy-part1.sh 可以保持裸 URL。
-#
-# 只有「需要认证」的远端才会触发本脚本；公开仓库 clone 不会调用它。
+# ⚠ 不用 url.*.insteadOf：它会把 user:token@ 落盘到 ~/.gitconfig，还会和
+#   checkout 注入的 extraheader 抢优先级（本地 .git/config 更高 → 令牌被盖掉
+#   → 404）。askpass 只在 git 要认证时才被调用，不写配置、不改 URL。
+#   公开仓库 clone 不会触发它。
 
 set -euo pipefail
 
