@@ -20,6 +20,8 @@ env:
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
   DIY_P3_SH: diy-part3.sh
+  # 触发时由 extra_plugins 下拉框决定；未传（repository_dispatch）时默认编入
+  ADD_EXTRA_PLUGINS: ${{ github.event.inputs.extra_plugins == 'false' && 'false' || 'true' }}
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: ${{ github.event.inputs.upload_release || 'true' }}
@@ -170,6 +172,14 @@ on:
         options:
           - firmware
           - toolchain-only
+      extra_plugins:
+        description: '附加插件（true=编入 / false=跳过；diy-part3.sh'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
       ignore_cache:
         description: '忽略构建缓存强制重编（跳过一次恢复，仍会存新一代）'
         required: false
@@ -889,7 +899,8 @@ jobs:
       #   写在机型 config 之外，避免为了多装几个包去改
       #   configs/<机型>.config。必须在 make defconfig 之前追加，
       #   否则新符号还没进 .config 就被展开掉了。
-      #   脚本自己按 PROFILE 决定是否生效。
+      #   由触发页面的「附加插件」下拉框（extra_plugins）控制，
+      #   脚本不再绑定具体机型。
       # =========================================================
       - name: Add extra plugins (diy-part3.sh)
         run: |
@@ -1038,7 +1049,7 @@ jobs:
             fi
             echo "✅ diy-part3 附加插件校验通过（$(grep -c . .diy-part3-packages) 个）"
           else
-            echo "ℹ 未启用 diy-part3 附加插件（当前机型不在 diy-part3.sh 的 ENABLED_PROFILES 内）"
+            echo "ℹ 未启用 diy-part3 附加插件（extra_plugins=false）"
           fi
 
           # =========================================================

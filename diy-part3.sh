@@ -34,33 +34,16 @@ if [ ! -f .config ]; then
 fi
 
 # ---------------------------------------------------------------
-# 生效机型（平时只改这里）
-#   一行写一个机型；增删机型就改这个数组：
-#     · 行末无需添加,
-#     · 删掉某一行  = 该机型不再追加这些插件
-#     · 数组清空    = 所有机型都追加
-#
-#   机型名必须和 build-ponwrt.yml 的 profile 选项一致。
+# 是否启用这套附加插件
+#   由 workflow 触发页面的「附加插件」下拉框控制：
+#     extra_plugins = true  → 编入（默认）
+#     extra_plugins = false → 跳过
+#   直接手动运行本脚本（没有该环境变量）时也默认编入。
 # ---------------------------------------------------------------
-ENABLED_PROFILES=(
-  nokia_xg-040g-md-ubi
-)
-
-# 当前构建的机型由 workflow 通过环境变量 PROFILE 传进来；
-# 本地手动运行时可以没有 PROFILE，那就默认全部执行。
-if [ -n "${PROFILE:-}" ] && [ "${#ENABLED_PROFILES[@]}" -gt 0 ]; then
-  PROFILE_MATCHED=false
-  for p in "${ENABLED_PROFILES[@]}"; do
-    if [ "$p" = "$PROFILE" ]; then
-      PROFILE_MATCHED=true
-      break
-    fi
-  done
-  if [ "$PROFILE_MATCHED" = false ]; then
-    echo "PROFILE=$PROFILE 不在启用列表内，跳过附加插件"
-    rm -f .diy-part3-packages
-    exit 0
-  fi
+if [ "${ADD_EXTRA_PLUGINS:-true}" != "true" ]; then
+  echo "ADD_EXTRA_PLUGINS=${ADD_EXTRA_PLUGINS:-false}，本次不追加附加插件"
+  rm -f .diy-part3-packages
+  exit 0
 fi
 
 # ---------------------------------------------------------------

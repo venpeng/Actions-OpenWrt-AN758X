@@ -24,6 +24,7 @@
 | `soc` | `an7581` / `an7583` | |
 | `profile` | 见下方机型表，`all` = 全机型 | 写错会在 `Validate configuration` 直接报错退出，不会静默全编 |
 | `scope` | `firmware` / `toolchain-only` | 后者只建工具链缓存，不出固件、不发 Release |
+| `extra_plugins` | `true`（默认）/ `false` | 是否编入 `diy-part3.sh` 里的附加插件（automount / Samba / DDNS / HomeProxy 等） |
 | `prebuilt_host` | `true`（默认）/ `false` | `true` 用 runner 的 Go/Rust/LLVM，快 1.5~2.5 小时；`false` 全部从源码编，产物可复现 |
 | `ignore_cache` | `false` / `true` | 跳过缓存恢复强制重编（仍会存新一代） |
 | `upload_release` | `true` / `false` | `false` 只留 Artifact |
@@ -81,8 +82,7 @@
 ## 附加插件（`diy-part3.sh`）
 
 不改 `configs/<机型>.config`，由 `diy-part3.sh` 在 `diy-part2.sh` 之后、`make defconfig` 之前把插件追加进 `.config`。
-默认只对 `nokia_xg-040g-md-ubi`、`fiberhome_hg5585f-ct`、`fiberhome_hg5585f-cu` 生效。
-增删机型改脚本顶部的 `ENABLED_PROFILES` 数组即可（一行一个机型，数组清空 = 所有机型）：
+触发 Build 时用 `extra_plugins` 下拉框选择：`true` 编入（默认），`false` 跳过；脚本本身不再绑定机型。
 
 | 菜单 | 包 |
 |---|---|
