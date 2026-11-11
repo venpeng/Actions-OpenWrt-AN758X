@@ -43,10 +43,12 @@
 
 | SoC | profile |
 |---|---|
-| AN7581 | `fiberhome_hg5382a` `fiberhome_hg5585f-ct` `fiberhome_hg5585f-cu` `gemtek_xg2010g` `nokia_xg-040g-md-ubi` `nokia_xg-040g-tf-ubi` `unionman_ung00a` `znxt_zn504xg-d` `znxt_zn515xg-d` `h3c_hm2004-du`※ |
+| AN7581 | `fiberhome_hg5382a` `fiberhome_an4475-g2`† `fiberhome_hg5585f-ct` `fiberhome_hg5585f-cu` `gemtek_xg2010g` `nokia_xg-040g-md-ubi` `nokia_xg-040g-tf-ubi` `unionman_ung00a` `znxt_zn504xg-d` `znxt_zn515xg-d` `h3c_hm2004-du`※ |
 | AN7583 | `nokia_xg-040g-mf` `nokia_xg-040g-mf-ubi` |
 
 ※ `h3c_hm2004-du` 额外依赖私有仓库 `openwrt-fttr`（FTTR 驱动 / 控制端 / FPGA 固件）与 `luci-app-fttr`，缺凭证时 `diy-part1.sh` 会直接报错退出。
+
+† `fiberhome_an4475-g2` 的板级 DTS / profile 在 **`qwe-qaq/ponwrt@master`**，构建时 `source` 必须选 `fork`（`pbs05/ponwrt` 尚未合入，会在 `Validate configuration` 阶段因机型符号不存在而失败）。`factory` UBI 卷为 **2 MiB**（AN4-2MiB 容器）。FTTR 后端三件套（`h3c-fmcs` / `openwrt-fttr` / FPGA 固件）是 HM2004-DU 专属，本机用 SoC 内置下行 PON，**不启用** `ADD_FTTR`。
 
 ## 插件开关（`diy-part1.sh`）
 
@@ -55,7 +57,7 @@
 | 开关 | 包 | 备注 |
 |---|---|---|
 | `ADD_AIROHA_NPU` | `luci-app-airoha-npu` | NPU 卸载 / CPU 频率 / Frame Engine / PPE 流表 |
-| `ADD_LUCI_APP` | `luci-app-natmode`、`luci-app-pon-status` | NAT 类型三选一、PON 光模块卡片 |
+| `ADD_LUCI_APP` | `luci-app-natmode`、`luci-app-pon-status`、`luci-app-igmpproxy` | NAT 类型三选一、PON 光模块卡片、IGMP Proxy 组播代理 Web 界面 |
 | `ADD_FLUENT` | `luci-theme-fluent` | 与 `argon` / `bootstrap` 可共存 |
 | `ADD_PASSWALL` | `luci-app-passwall` + `xray-core` / `sing-box` | 新版 passwall 把内核做成按需安装，config 里另开了两个 feeds 现成的 |
 | `ADD_OPENCLASH` | `luci-app-openclash` | ⚠ 拖 Ruby 进构建，首次 +20~40 分钟 |
@@ -153,7 +155,7 @@ golang 和 rust 每轮都在从源码自举。
 
 **两种 host 模式不共用缓存**：`HOST_MODE` 进前缀。prebuilt 在 `staging_dir` 里留的是指向 runner 的符号链接，source 留的是真二进制，混用会让 make 误判「已安装」并在编译期报一个完全对不上的错。**warm-cache 必须和主流程选同一个模式**，否则预热白跑。
 
-**rust 包的离线限制**：`h3c-fttr-tools` 的 Makefile 用 `cargo install --locked --frozen`，`--frozen` 禁止联网、只认 `dl/cargo` 里已有的 crate。`scripts/patch-cargo-offline.sh` 把 `--frozen` / `--offline` 摘掉，`--locked` 保留（版本仍锁死）。
+**rust 包的离线限制**：`openwrt-fttr` 的 Makefile 用 `cargo install --locked --frozen`，`--frozen` 禁止联网、只认 `dl/cargo` 里已有的 crate。`scripts/patch-cargo-offline.sh` 把 `--frozen` / `--offline` 摘掉，`--locked` 保留（版本仍锁死）。
 
 ## 客制化
 
